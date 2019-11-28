@@ -1,13 +1,22 @@
+// @todo refactor
+
+// @todo frame rate and sleep, dt
+// @todo handle controller input
+
+
 #include <windows.h>
 #include <stdio.h>
 
 #include "iml_general.h"
 #include "iml_types.h"
 
+#include "random.h"
 
 #define BLOCK_SIZE 32
-#define WIDTH  (16 * BLOCK_SIZE)
-#define HEIGHT (32 * BLOCK_SIZE)
+#define GRID_WIDTH 16
+#define GRID_HEIGHT 32
+#define WIDTH  (GRID_WIDTH * BLOCK_SIZE)
+#define HEIGHT (GRID_HEIGHT * BLOCK_SIZE)
 
 
 struct Win32_Offscreen_Buffer {
@@ -29,8 +38,50 @@ struct Vector2 {
     int y;
 };
 
-struct Game_State {
+struct Vector3 {
+    union {
+        struct {
+            u32 x;
+            u32 y;
+            u32 z;
+        };
+        struct {
+            u32 r;
+            u32 g;
+            u32 b;
+        };
+    };
+};
+
+internal Vector3
+rgb(u32 r, u32 g, u32 b) {
+    Vector3 rgb { r, g, b };
+    return rgb;
+}
+
+enum Block_Type {
+    EMPTY = 0,
     
+    // @note descriptions from wikipedia:https://tetris.wiki/Tetromino
+    I, // Light blue; shaped like a capital I; four Minos in a straight line. Other names include straight, stick, and long. This is the only tetromino that can clear four lines outside of cascade games.
+    O, // Yellow; a square shape; four Minos in a 2×2 square. Other names include square and block.
+    T, // Purple; shaped like a capital T; a row of three Minos with one added above the center.
+    S, // Green; shaped like a capital S; two stacked horizontal diminos with the top one offset to the right. Other names include inverse skew and right snake.
+    Z, // Red; shaped like a capital Z; two stacked horizontal diminos with the top one offset to the left. Other names include skew and left snake.
+    J, // Blue; shaped like a capital J; a row of three Minos with one added above the left side. Other names include gamma, inverse L, or left gun.
+    L, // Orange; shaped like a capital L; a row of three Minos with one added above the right side. Other names include right gun.
+    
+    ENUM_SIZE,
+};
+
+struct Block {
+    Vector2 pos[4];
+    enum32(Block_Type) type;
+};
+
+struct Game_State {
+    Block current_block;
+    int grid[GRID_HEIGHT][GRID_WIDTH]; // @todo enum for the color of the block
 };
 
 
@@ -103,28 +154,7 @@ win32_main_window_callback(HWND window,
         case WM_SYSKEYUP:
         case WM_KEYDOWN:
         case WM_KEYUP: {
-            u32 vk_code  = wparam;
-            b32 was_down = ((lparam & (1 << 30)) != 0);
-            b32 is_down  = ((lparam & (1 << 31)) == 0);
-            
-            if (is_down) {
-                if (vk_code == 'W') {
-                }
-                else if (vk_code == 'A') {
-                }
-                else if (vk_code == 'S') {
-                }
-                else if (vk_code == 'D') {
-                }
-                else if (vk_code == VK_ESCAPE) {
-                    global_running = false;
-                }
-            }
-            
-            b32 alt_key_was_down = (lparam & (1 << 29));
-            if ((vk_code == VK_F4) && alt_key_was_down) {
-                global_running = false;
-            }
+            assert(!"Keyboard input came in through a non-dispatch message!");
         } break;
         
         case WM_PAINT: {
@@ -148,16 +178,12 @@ win32_main_window_callback(HWND window,
 }
 
 internal void
-win32_render_game(Win32_Offscreen_Buffer *buffer, Game_State *game_state) {
+win32_clear_buffer(Win32_Offscreen_Buffer *buffer, Game_State *game_state) {
     u8 *row = (u8 *)buffer->memory;
     for (int y = 0; y < buffer->height; ++y) {
         u32 *pixel = (u32 *)row;
         for (int x = 0; x < buffer->width; ++x) {
-            u8 red = 0;
-            u8 blue = 0;
-            u8 green = 0;
-            
-            *pixel++ = ((red << 16) | ((green << 8) | blue));
+            *pixel++ = 0;
         }
         
         row += buffer->pitch;
@@ -165,10 +191,19 @@ win32_render_game(Win32_Offscreen_Buffer *buffer, Game_State *game_state) {
 }
 
 internal void
-win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos) {
-    u32 r = 255;
-    u32 g = 0;
-    u32 b = 0;
+win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos, enum32(Block_Type) type) {
+    Vector3 color_rgb = {};
+    if (type == Block_Type::I)      { color_rgb = rgb(  0, 191, 255); }
+    else if (type == Block_Type::O) { color_rgb = rgb(255, 255, 0  ); }
+    else if (type == Block_Type::T) { color_rgb = rgb(128,   0, 128); }
+    else if (type == Block_Type::S) { color_rgb = rgb(  0, 255, 0  ); }
+    else if (type == Block_Type::Z) { color_rgb = rgb(255,   0, 0  ); }
+    else if (type == Block_Type::J) { color_rgb = rgb(  0,   0, 255); }
+    else if (type == Block_Type::L) { color_rgb = rgb(255, 165, 0  ); }
+    else {
+        color_rgb = rgb(255, 255, 255);
+    }
+    
     //
     s32 min_x = block_pos.x * BLOCK_SIZE;
     s32 min_y = block_pos.y * BLOCK_SIZE;
@@ -180,9 +215,9 @@ win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos) {
     if (max_x > buffer->width)   max_x = buffer->width;
     if (max_y > buffer->height)  max_y = buffer->height;
     
-    u32 color = ((r << 16) |
-                 (g << 8)  |
-                 (b << 0));
+    u32 color = ((color_rgb.r << 16) |
+                 (color_rgb.g << 8)  |
+                 (color_rgb.b << 0));
     
     u8 *row = ((u8 *)buffer->memory +
                min_x * buffer->bytes_per_pixel +
@@ -195,6 +230,96 @@ win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos) {
         }
         row += buffer->pitch;
     }
+}
+
+internal void
+win32_process_pending_messages(Game_State *game_state) {
+    MSG message;
+    while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
+        switch (message.message) {
+            case WM_QUIT: {
+                global_running = false;
+            } break;
+            case WM_SYSKEYDOWN:
+            case WM_SYSKEYUP:
+            case WM_KEYDOWN:
+            case WM_KEYUP: {
+                u32 vk_code = (u32)message.wParam;
+                
+                // @note Since we are comparing was_down to is_down,
+                // we MUST use == and != to convert these bit tests to actual 0 or 1 values.
+                b32 was_down = ((message.lParam & (1 << 30)) != 0);
+                b32 is_down = ((message.lParam & (1 << 31)) == 0);
+                if (was_down != is_down && is_down) {
+                    if ((vk_code == 'W') || (vk_code == VK_UP)) {
+                        // --game_state->current_block.pos.y;
+                    }
+                    else if ((vk_code == 'A') || (vk_code == VK_LEFT)) {
+                        b32 can_move = true;
+                        for (int i = 0; i < 4; ++i) {
+                            if (game_state->current_block.pos[i].x <= 0) {
+                                can_move = false;
+                            }
+                        }
+                        if (can_move)  {
+                            for (int i = 0; i < 4; ++i) {
+                                --game_state->current_block.pos[i].x;
+                            }
+                        }
+                    }
+                    else if ((vk_code == 'S') || (vk_code == VK_DOWN)) {
+                        // ++game_state->current_block.pos.y;
+                    }
+                    else if ((vk_code == 'D') || (vk_code == VK_RIGHT)) {
+                        b32 can_move = true;
+                        for (int i = 0; i < 4; ++i) {
+                            if (game_state->current_block.pos[i].x >= GRID_WIDTH-1) {
+                                can_move = false;
+                            }
+                        }
+                        if (can_move)  {
+                            for (int i = 0; i < 4; ++i) {
+                                ++game_state->current_block.pos[i].x;
+                            }
+                        }
+                    }
+                    else if (vk_code == VK_ESCAPE) {
+                        global_running = false;
+                    }
+                }
+                
+                if (is_down) {
+                    b32 alt_key_was_down = (message.lParam & (1 << 29));
+                    if ((vk_code == VK_F4) && alt_key_was_down) {
+                        global_running = false;
+                    }
+                }
+            } break;
+            
+            default: {
+                TranslateMessage(&message);
+                DispatchMessageA(&message);
+            } break;
+        }
+    }
+}
+
+internal void
+reset_game(Game_State *game_state, b32 clear_grid) {
+    // clear grid
+    for (int y = 0; y < GRID_HEIGHT; ++y) {
+        for (int x = 0; x < GRID_WIDTH; ++x) {
+            game_state->grid[y][x] = Block_Type::EMPTY;
+        }
+    }
+    
+    
+    int half_screen = ((int)GRID_WIDTH/2);
+    game_state->current_block.pos[0] = {half_screen,0};
+    game_state->current_block.pos[1] = {half_screen,1};
+    game_state->current_block.pos[2] = {half_screen-1,0};
+    game_state->current_block.pos[3] = {half_screen-1,1};
+    game_state->current_block.type = Block_Type::O;
 }
 
 int CALLBACK
@@ -230,6 +355,7 @@ WinMain(HINSTANCE instance,
     s64 perf_count_frequency = perf_count_frequency_result.QuadPart;
     
     Game_State game_state = {};
+    reset_game(&game_state, false);
     
     global_running = true;
     
@@ -237,26 +363,163 @@ WinMain(HINSTANCE instance,
     QueryPerformanceCounter(&last_counter);
     u64 last_cycle_count = __rdtsc();
     while (global_running) {
-        MSG message;
-        while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
-            if (message.message == WM_QUIT) {
-                global_running = false;
-            }
-            
-            TranslateMessage(&message);
-            DispatchMessageA(&message);
-        }
-        
         //
         // simulate
         //
+        auto add_block_to_grid = [](Game_State *game_state, Block *block) {
+            for (int i = 0; i < 4; ++i) {
+                game_state->grid[block->pos[i].y][block->pos[i].x] = block->type;
+            }
+        };
+        auto make_new_current_block = [](Game_State *game_state, Vector2 *old_block_pos = nullptr) {
+            // @todo generate different blocks
+            enum32(Block_Type) type = (get_next_random_number() % Block_Type::ENUM_SIZE) + 1;
+            game_state->current_block.type = type;
+            
+            int half_screen = ((int)GRID_WIDTH/2);
+            Vector2 p0, p1, p2, p3;
+            
+            if (type == Block_Type::I)      { p0={-1,0}; p1={0,0} ;p2={1,0} ;p3={2,0}; }
+            else if (type == Block_Type::O) { p0={0,0}; p1={1,0} ;p2={0,1} ;p3={1,1}; }
+            else if (type == Block_Type::T) { p0={0,0}; p1={-1,1} ;p2={0,1} ;p3={1,1}; }
+            else if (type == Block_Type::S) { p0={-1,1}; p1={0,1} ;p2={0,0} ;p3={1,0}; }
+            else if (type == Block_Type::Z) { p0={-1,0}; p1={0,0} ;p2={0,1} ;p3={1,1}; }
+            else if (type == Block_Type::J) { p0={-1,0}; p1={-1,1} ;p2={0,1} ;p3={1,1}; }
+            else if (type == Block_Type::L) { p0={-1,1}; p1={0,1} ;p2={1,1} ;p3={1,0}; }
+            else {
+                // @todo assert
+            }
+            game_state->current_block.pos[0] = {p0.x+half_screen, p0.y+half_screen};
+            game_state->current_block.pos[1] = {p1.x+half_screen, p1.y+half_screen};
+            game_state->current_block.pos[2] = {p2.x+half_screen, p2.y+half_screen};
+            game_state->current_block.pos[3] = {p3.x+half_screen, p3.y+half_screen};
+            
+            // @copynpaste
+            b32 hit = false;
+            for (int i = 0; i < 4; ++i) {
+                if (game_state->grid[game_state->current_block.pos[i].y][game_state->current_block.pos[i].x] != Block_Type::EMPTY)  {
+                    // hit a block
+                    hit = true;
+                }
+            }
+            if (hit)  {
+                reset_game(game_state, true);
+            }
+        };
         
+        
+        Block old_block = {};
+        old_block = game_state.current_block;
+        for (int i = 0; i < 4; ++i) {
+            old_block.pos[i] = game_state.current_block.pos[i];
+        }
+        
+        // @note handle input
+        win32_process_pending_messages(&game_state);
+        
+        
+        // @note check if current_block hit other blocks because of the player input
+        b32 hit = false;
+        for (int i = 0; i < 4; ++i) {
+            if (game_state.grid[game_state.current_block.pos[i].y][game_state.current_block.pos[i].x] != Block_Type::EMPTY)  {
+                // hit a block
+                hit = true;
+            }
+        }
+        if (hit)  {
+            for (int i = 0; i < 4; ++i) {
+                game_state.current_block.pos[i] = old_block.pos[i];
+            }
+        }
+        
+        // @note check if current_block hit the bottom
+        hit = false;
+        for (int i = 0; i < 4; ++i) {
+            if (game_state.current_block.pos[i].y >= GRID_HEIGHT-1) {
+                hit = true;
+            }
+        }
+        if (hit)  {
+            add_block_to_grid(&game_state, &old_block);
+            make_new_current_block(&game_state, old_block.pos);
+        }
+        else {
+            // @note move the current_block downward
+            for (int i = 0; i < 4; ++i) {
+                ++game_state.current_block.pos[i].y;
+            }
+        }
+        
+        // @note check if current block hit other blocks after moving downward
+        // @copynpaste
+        hit = false;
+        for (int i = 0; i < 4; ++i) {
+            if (game_state.grid[game_state.current_block.pos[i].y][game_state.current_block.pos[i].x] != Block_Type::EMPTY)  {
+                // hit a block
+                hit = true;
+            }
+        }
+        if (hit)  {
+            for (int i = 0; i < 4; ++i) {
+                game_state.current_block.pos[i] = old_block.pos[i];
+            }
+            add_block_to_grid(&game_state, &old_block);
+            make_new_current_block(&game_state, old_block.pos);
+        }
+        
+        //
+        // @note check for tetris
+        //
+        // @todo for_each line check if full, and move everything down
+        // @todo @note If top most line is full, -> game over
+        int line_streak_count = 0;
+        for (int current_line = GRID_HEIGHT-1; current_line >= 0; --current_line) {
+            b32 line_full = true;
+            for (int x = 0; x < GRID_WIDTH; ++x) {
+                if (game_state.grid[current_line][x] == Block_Type::EMPTY) {
+                    line_full = false;
+                    line_streak_count = 0;
+                }
+                else {
+                    ++line_streak_count;
+                }
+            }
+            if (line_full)  {
+                if (line_streak_count == 4)  {
+                    // @todo BOOM TETRIS
+                }
+                
+                // @note move all blocks done 1, skip last line
+                for (int y = current_line-1; y >= 0; --y) {
+                    for (int x = 0; x < GRID_WIDTH; ++x) {
+                        game_state.grid[y+1][x] = game_state.grid[y][x];
+                    }
+                }
+                // @note clear top most line, because it got moved down by one
+                for (int x = 0; x < GRID_WIDTH; ++x) {
+                    game_state.grid[0][x] = Block_Type::EMPTY;
+                }
+            }
+        }
         
         //
         // render
         //
-        Vector2 block_pos = {2,2};
-        win32_render_block(&global_backbuffer, block_pos);
+        win32_clear_buffer(&global_backbuffer, &game_state);
+        
+        // @note render grid
+        for (int y = 0; y < GRID_HEIGHT; ++y) {
+            for (int x = 0; x < GRID_WIDTH; ++x) {
+                int type = game_state.grid[y][x];
+                if (type > 0)  {
+                    win32_render_block(&global_backbuffer, Vector2{x,y}, type);
+                }
+            }
+        }
+        // @note render current_block
+        for (int i = 0; i < 4; ++i) {
+            win32_render_block(&global_backbuffer, game_state.current_block.pos[i], game_state.current_block.type);
+        }
         
         Win32_Window_Dimension dimension = win32_get_window_dimension(window);
         win32_display_buffer_in_window(&global_backbuffer, device_context, dimension.width, dimension.height);
@@ -264,7 +527,7 @@ WinMain(HINSTANCE instance,
         //
         // sleep
         //
-        DWORD sleep_ms = 100;
+        DWORD sleep_ms = 80;
         Sleep(sleep_ms);
         
         
