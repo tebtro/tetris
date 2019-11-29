@@ -1,5 +1,3 @@
-// @todo refactor
-
 // @todo frame rate and sleep, dt
 // @todo handle controller input
 
@@ -37,6 +35,7 @@ struct Vector2 {
     int x;
     int y;
 };
+typedef Vector2 v2;
 
 struct Vector3 {
     union {
@@ -52,6 +51,7 @@ struct Vector3 {
         };
     };
 };
+typedef Vector3 v3;
 
 internal Vector3
 rgb(u32 r, u32 g, u32 b) {
@@ -84,10 +84,125 @@ struct Game_State {
     int grid[GRID_HEIGHT][GRID_WIDTH]; // @todo enum for the color of the block
 };
 
-
+global Vector3 block_colors_by_type[Block_Type::ENUM_SIZE] = {
+    rgb(255,255,255), // Block_Type::EMPTY, should not get rendered
+    
+    rgb(  0, 191, 255),
+    rgb(255, 255, 0  ),
+    rgb(128,   0, 128),
+    rgb(  0, 255, 0  ),
+    rgb(255,   0, 0  ),
+    rgb(  0,   0, 255),
+    rgb(255, 165, 0  )
+};
 global Win32_Offscreen_Buffer global_backbuffer;
 global b32 global_running;
 
+
+internal b32
+is_block_colliding(Game_State *game_state, Block *block) {
+    b32 hit = false;
+    for (int i = 0; i < 4; ++i) {
+        if (game_state->grid[block->pos[i].y][block->pos[i].x] != Block_Type::EMPTY)  {
+            hit = true;
+            break;
+        }
+    }
+    return hit;
+}
+
+internal b32
+is_block_out_of_bounds(Block *block) {
+    b32 out_of_bounds = false;
+    for (int i = 0; i < 4; ++i) {
+        if ((block->pos[i].y >= 0            &&
+             block->pos[i].y <  GRID_HEIGHT) &&
+            (block->pos[i].x >= 0            &&
+             block->pos[i].x <  GRID_WIDTH)) {
+            // inside grid
+        }
+        else {
+            out_of_bounds = true;
+            break;
+        }
+    }
+    return out_of_bounds;
+}
+
+internal void
+rotate_block(Block *block, b32 clockwise) {
+    Vector2 rotating_pos;
+    if (block->type == Block_Type::I)  rotating_pos = block->pos[1];
+    else if (block->type == Block_Type::O)  return;
+    else if (block->type == Block_Type::T)  rotating_pos = block->pos[2];
+    else if (block->type == Block_Type::S)  rotating_pos = block->pos[1];
+    else if (block->type == Block_Type::S)  rotating_pos = block->pos[1];
+    else if (block->type == Block_Type::J)  rotating_pos = block->pos[2];
+    else if (block->type == Block_Type::J)  rotating_pos = block->pos[2];
+    else rotating_pos = block->pos[1];
+    
+    for (int i = 0; i < 4; ++i) {
+        Vector2 diff;
+        diff.x = rotating_pos.x - block->pos[i].x;
+        diff.y = rotating_pos.y - block->pos[i].y;
+        
+        if (clockwise) {
+            block->pos[i].x = rotating_pos.x + diff.y;
+            block->pos[i].y = rotating_pos.y - diff.x;
+        }
+        else {
+            block->pos[i].x = rotating_pos.x - diff.y;
+            block->pos[i].y = rotating_pos.y + diff.x;
+        }
+    }
+}
+
+internal void reset_game(Game_State *game_state, b32 clear_grid);
+internal void
+make_new_current_block(Game_State *game_state) {
+    // @todo generate different rotations?
+    
+    enum32(Block_Type) type = (get_next_random_number() % Block_Type::ENUM_SIZE-1) + 2;
+    game_state->current_block.type = type;
+    
+    int half_screen = ((int)GRID_WIDTH/2);
+    Vector2 p[4];
+    
+    if (type == Block_Type::I)      { p[0]={-1,0}; p[1]={ 0,0}; p[2]={1,0}; p[3]={2,0}; }
+    else if (type == Block_Type::O) { p[0]={ 0,0}; p[1]={ 1,0}; p[2]={0,1}; p[3]={1,1}; }
+    else if (type == Block_Type::T) { p[0]={ 0,0}; p[1]={-1,1}; p[2]={0,1}; p[3]={1,1}; }
+    else if (type == Block_Type::S) { p[0]={-1,1}; p[1]={ 0,1}; p[2]={0,0}; p[3]={1,0}; }
+    else if (type == Block_Type::Z) { p[0]={-1,0}; p[1]={ 0,0}; p[2]={0,1}; p[3]={1,1}; }
+    else if (type == Block_Type::J) { p[0]={-1,0}; p[1]={-1,1}; p[2]={0,1}; p[3]={1,1}; }
+    else if (type == Block_Type::L) { p[0]={-1,1}; p[1]={ 0,1}; p[2]={1,1}; p[3]={1,0}; }
+    else {
+        // @todo assert
+        int *null_ = (int *)0;
+        *null_ = 1;
+    }
+    game_state->current_block.pos[0] = {p[0].x+half_screen, p[0].y};
+    game_state->current_block.pos[1] = {p[1].x+half_screen, p[1].y};
+    game_state->current_block.pos[2] = {p[2].x+half_screen, p[2].y};
+    game_state->current_block.pos[3] = {p[3].x+half_screen, p[3].y};
+    
+    b32 hit = is_block_colliding(game_state, &game_state->current_block);
+    if (hit)  {
+        // @note game over
+        reset_game(game_state, true);
+    }
+}
+
+internal void
+reset_game(Game_State *game_state, b32 clear_grid) {
+    // clear grid
+    for (int y = 0; y < GRID_HEIGHT; ++y) {
+        for (int x = 0; x < GRID_WIDTH; ++x) {
+            game_state->grid[y][x] = Block_Type::EMPTY;
+        }
+    }
+    
+    make_new_current_block(game_state);
+}
 
 internal void
 win32_resize_dib_section(Win32_Offscreen_Buffer *buffer, int width, int height) {
@@ -192,18 +307,8 @@ win32_clear_buffer(Win32_Offscreen_Buffer *buffer, Game_State *game_state) {
 
 internal void
 win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos, enum32(Block_Type) type) {
-    Vector3 color_rgb = {};
-    if (type == Block_Type::I)      { color_rgb = rgb(  0, 191, 255); }
-    else if (type == Block_Type::O) { color_rgb = rgb(255, 255, 0  ); }
-    else if (type == Block_Type::T) { color_rgb = rgb(128,   0, 128); }
-    else if (type == Block_Type::S) { color_rgb = rgb(  0, 255, 0  ); }
-    else if (type == Block_Type::Z) { color_rgb = rgb(255,   0, 0  ); }
-    else if (type == Block_Type::J) { color_rgb = rgb(  0,   0, 255); }
-    else if (type == Block_Type::L) { color_rgb = rgb(255, 165, 0  ); }
-    else {
-        color_rgb = rgb(255, 255, 255);
-    }
-    
+    if (type == Block_Type::EMPTY)  return;
+    Vector3 color_rgb = block_colors_by_type[(int)type];
     //
     s32 min_x = block_pos.x * BLOCK_SIZE;
     s32 min_y = block_pos.y * BLOCK_SIZE;
@@ -283,6 +388,17 @@ win32_process_pending_messages(Game_State *game_state) {
                             }
                         }
                     }
+                    else if ((vk_code == 'J') || (vk_code == 'K')) {
+                        b32 clockwise = (vk_code == 'J') ? false : true;
+                        
+                        Block old_block  = game_state->current_block;
+                        rotate_block(&game_state->current_block, clockwise);
+                        b32 valid = (is_block_colliding(game_state, &game_state->current_block) ||
+                                     is_block_out_of_bounds(&game_state->current_block));
+                        if (valid)  {
+                            game_state->current_block = old_block;
+                        }
+                    }
                     else if (vk_code == VK_ESCAPE) {
                         global_running = false;
                     }
@@ -302,24 +418,6 @@ win32_process_pending_messages(Game_State *game_state) {
             } break;
         }
     }
-}
-
-internal void
-reset_game(Game_State *game_state, b32 clear_grid) {
-    // clear grid
-    for (int y = 0; y < GRID_HEIGHT; ++y) {
-        for (int x = 0; x < GRID_WIDTH; ++x) {
-            game_state->grid[y][x] = Block_Type::EMPTY;
-        }
-    }
-    
-    
-    int half_screen = ((int)GRID_WIDTH/2);
-    game_state->current_block.pos[0] = {half_screen,0};
-    game_state->current_block.pos[1] = {half_screen,1};
-    game_state->current_block.pos[2] = {half_screen-1,0};
-    game_state->current_block.pos[3] = {half_screen-1,1};
-    game_state->current_block.type = Block_Type::O;
 }
 
 int CALLBACK
@@ -371,61 +469,15 @@ WinMain(HINSTANCE instance,
                 game_state->grid[block->pos[i].y][block->pos[i].x] = block->type;
             }
         };
-        auto make_new_current_block = [](Game_State *game_state, Vector2 *old_block_pos = nullptr) {
-            // @todo generate different blocks
-            enum32(Block_Type) type = (get_next_random_number() % Block_Type::ENUM_SIZE) + 1;
-            game_state->current_block.type = type;
-            
-            int half_screen = ((int)GRID_WIDTH/2);
-            Vector2 p0, p1, p2, p3;
-            
-            if (type == Block_Type::I)      { p0={-1,0}; p1={0,0} ;p2={1,0} ;p3={2,0}; }
-            else if (type == Block_Type::O) { p0={0,0}; p1={1,0} ;p2={0,1} ;p3={1,1}; }
-            else if (type == Block_Type::T) { p0={0,0}; p1={-1,1} ;p2={0,1} ;p3={1,1}; }
-            else if (type == Block_Type::S) { p0={-1,1}; p1={0,1} ;p2={0,0} ;p3={1,0}; }
-            else if (type == Block_Type::Z) { p0={-1,0}; p1={0,0} ;p2={0,1} ;p3={1,1}; }
-            else if (type == Block_Type::J) { p0={-1,0}; p1={-1,1} ;p2={0,1} ;p3={1,1}; }
-            else if (type == Block_Type::L) { p0={-1,1}; p1={0,1} ;p2={1,1} ;p3={1,0}; }
-            else {
-                // @todo assert
-            }
-            game_state->current_block.pos[0] = {p0.x+half_screen, p0.y+half_screen};
-            game_state->current_block.pos[1] = {p1.x+half_screen, p1.y+half_screen};
-            game_state->current_block.pos[2] = {p2.x+half_screen, p2.y+half_screen};
-            game_state->current_block.pos[3] = {p3.x+half_screen, p3.y+half_screen};
-            
-            // @copynpaste
-            b32 hit = false;
-            for (int i = 0; i < 4; ++i) {
-                if (game_state->grid[game_state->current_block.pos[i].y][game_state->current_block.pos[i].x] != Block_Type::EMPTY)  {
-                    // hit a block
-                    hit = true;
-                }
-            }
-            if (hit)  {
-                reset_game(game_state, true);
-            }
-        };
         
-        
-        Block old_block = {};
-        old_block = game_state.current_block;
-        for (int i = 0; i < 4; ++i) {
-            old_block.pos[i] = game_state.current_block.pos[i];
-        }
+        Block old_block  = game_state.current_block;
         
         // @note handle input
         win32_process_pending_messages(&game_state);
         
         
         // @note check if current_block hit other blocks because of the player input
-        b32 hit = false;
-        for (int i = 0; i < 4; ++i) {
-            if (game_state.grid[game_state.current_block.pos[i].y][game_state.current_block.pos[i].x] != Block_Type::EMPTY)  {
-                // hit a block
-                hit = true;
-            }
-        }
+        b32 hit = is_block_colliding(&game_state, &game_state.current_block);
         if (hit)  {
             for (int i = 0; i < 4; ++i) {
                 game_state.current_block.pos[i] = old_block.pos[i];
@@ -433,15 +485,18 @@ WinMain(HINSTANCE instance,
         }
         
         // @note check if current_block hit the bottom
-        hit = false;
+        b32 out_of_bounds = is_block_out_of_bounds(&game_state.current_block);
+#if 1
+        out_of_bounds = false;
         for (int i = 0; i < 4; ++i) {
             if (game_state.current_block.pos[i].y >= GRID_HEIGHT-1) {
-                hit = true;
+                out_of_bounds = true;
             }
         }
-        if (hit)  {
+#endif
+        if (out_of_bounds)  {
             add_block_to_grid(&game_state, &old_block);
-            make_new_current_block(&game_state, old_block.pos);
+            make_new_current_block(&game_state);
         }
         else {
             // @note move the current_block downward
@@ -451,20 +506,13 @@ WinMain(HINSTANCE instance,
         }
         
         // @note check if current block hit other blocks after moving downward
-        // @copynpaste
-        hit = false;
-        for (int i = 0; i < 4; ++i) {
-            if (game_state.grid[game_state.current_block.pos[i].y][game_state.current_block.pos[i].x] != Block_Type::EMPTY)  {
-                // hit a block
-                hit = true;
-            }
-        }
+        hit = is_block_colliding(&game_state, &game_state.current_block);
         if (hit)  {
             for (int i = 0; i < 4; ++i) {
                 game_state.current_block.pos[i] = old_block.pos[i];
             }
             add_block_to_grid(&game_state, &old_block);
-            make_new_current_block(&game_state, old_block.pos);
+            make_new_current_block(&game_state);
         }
         
         //
