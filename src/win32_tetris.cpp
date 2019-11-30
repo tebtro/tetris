@@ -7,20 +7,28 @@
 // @todo handle controller input
 
 
-
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <mmsystem.h> // @note excluded in lean and mean, used for timeBeginPeriod to set scheduler granularity
+
 #include <stdio.h>
 
 #include "iml_general.h"
 #include "iml_types.h"
 
-#include "random.h"
+#define SCALE_FACTOR 6
 
-#define BLOCK_SIZE 32
-#define GRID_WIDTH 16
-#define GRID_HEIGHT 32
-#define WIDTH  (GRID_WIDTH * BLOCK_SIZE)
-#define HEIGHT (GRID_HEIGHT * BLOCK_SIZE)
+#define BLOCK_SIZE 7
+
+#define BLOCK_GAP_SIZE 1
+
+#define GRID_WIDTH 10
+#define GRID_HEIGHT 20
+#define WIDTH  ((GRID_WIDTH * BLOCK_SIZE) + ((GRID_WIDTH+1) * BLOCK_GAP_SIZE))
+#define HEIGHT ((GRID_HEIGHT * BLOCK_SIZE) + ((GRID_HEIGHT+1) * BLOCK_GAP_SIZE))
+
+#define WINDOW_WIDTH (WIDTH * SCALE_FACTOR)
+#define WINDOW_HEIGHT (HEIGHT * SCALE_FACTOR)
 
 
 struct Win32_Offscreen_Buffer {
@@ -164,6 +172,16 @@ rotate_block(Block *block, b32 clockwise) {
     }
 }
 
+#include <stdlib.h>
+#include <time.h>
+
+internal u32
+get_random_number_in_range(int min, int max) {
+    srand(time(null));
+    u32 random = min + (rand() % ((max + 1) - min));
+    return random;
+}
+
 internal void reset_game(Game_State *game_state, b32 clear_grid);
 internal void
 make_new_current_block(Game_State *game_state) {
@@ -171,7 +189,7 @@ make_new_current_block(Game_State *game_state) {
     
     int min = Block_Type::EMPTY + 1;
     int max = Block_Type::ENUM_SIZE - 1;
-    enum32(Block_Type) type = get_next_random_number_in_range(min, max); // @note we don't want 0=empty and 8=enum_size
+    enum32(Block_Type) type = get_random_number_in_range(min, max); // @note we don't want 0=empty and 8=enum_size
     game_state->current_block.type = type;
     
     int half_screen = ((int)GRID_WIDTH/2);
@@ -319,8 +337,8 @@ win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos, enum32(Blo
     if (type == Block_Type::EMPTY)  return;
     Vector3 color_rgb = block_colors_by_type[(int)type];
     //
-    s32 min_x = block_pos.x * BLOCK_SIZE;
-    s32 min_y = block_pos.y * BLOCK_SIZE;
+    s32 min_x = (block_pos.x * BLOCK_SIZE) + ((block_pos.x+1) * BLOCK_GAP_SIZE);
+    s32 min_y = (block_pos.y * BLOCK_SIZE) + ((block_pos.y+1) * BLOCK_GAP_SIZE);
     s32 max_x = min_x + BLOCK_SIZE;
     s32 max_y = min_y + BLOCK_SIZE;
     
@@ -339,10 +357,62 @@ win32_render_block(Win32_Offscreen_Buffer *buffer, Vector2 block_pos, enum32(Blo
     for (int y = min_y; y < max_y; ++y) {
         u32 *pixel = (u32 *)row;
         for (int x = min_x; x < max_x; ++x) {
-            *pixel = color;
+            u32 _color = color;
+            if ((x==(min_x+0) && y==(min_y+0)) ||
+                (x==(min_x+1) && y==(min_y+1)) ||
+                (x==(min_x+1) && y==(min_y+2)) ||
+                (x==(min_x+2) && y==(min_y+1))) {
+                _color = 0xFFFFFFFF;
+            }
+            
+            *pixel = _color;
             ++pixel;
         }
         row += buffer->pitch;
+    }
+}
+
+internal void
+move_current_block_left(Game_State *game_state) {
+    b32 can_move = true;
+    for (int i = 0; i < 4; ++i) {
+        if (game_state->current_block.pos[i].x <= 0) {
+            can_move = false;
+        }
+    }
+    if (can_move)  {
+        Block old_block  = game_state->current_block;
+        for (int i = 0; i < 4; ++i) {
+            --game_state->current_block.pos[i].x;
+        }
+        b32 hit = is_block_colliding(game_state, &game_state->current_block);
+        if (hit)  {
+            for (int i = 0; i < 4; ++i) {
+                game_state->current_block.pos[i] = old_block.pos[i];
+            }
+        }
+    }
+}
+
+internal void
+move_current_block_right(Game_State *game_state) {
+    b32 can_move = true;
+    for (int i = 0; i < 4; ++i) {
+        if (game_state->current_block.pos[i].x >= GRID_WIDTH-1) {
+            can_move = false;
+        }
+    }
+    if (can_move)  {
+        Block old_block  = game_state->current_block;
+        for (int i = 0; i < 4; ++i) {
+            ++game_state->current_block.pos[i].x;
+        }
+        b32 hit = is_block_colliding(game_state, &game_state->current_block);
+        if (hit)  {
+            for (int i = 0; i < 4; ++i) {
+                game_state->current_block.pos[i] = old_block.pos[i];
+            }
+        }
     }
 }
 
@@ -364,52 +434,24 @@ win32_process_pending_messages(Game_State *game_state) {
                 // we MUST use == and != to convert these bit tests to actual 0 or 1 values.
                 b32 was_down = ((message.lParam & (1 << 30)) != 0);
                 b32 is_down = ((message.lParam & (1 << 31)) == 0);
-                if (was_down != is_down && is_down) {
-                    if ((vk_code == 'W') || (vk_code == VK_UP)) {
-                        // --game_state->current_block.pos.y;
-                    }
-                    else if ((vk_code == 'A') || (vk_code == VK_LEFT)) {
-                        b32 can_move = true;
-                        for (int i = 0; i < 4; ++i) {
-                            if (game_state->current_block.pos[i].x <= 0) {
-                                can_move = false;
-                            }
-                        }
-                        if (can_move)  {
-                            Block old_block  = game_state->current_block;
-                            for (int i = 0; i < 4; ++i) {
-                                --game_state->current_block.pos[i].x;
-                            }
-                            b32 hit = is_block_colliding(game_state, &game_state->current_block);
-                            if (hit)  {
-                                for (int i = 0; i < 4; ++i) {
-                                    game_state->current_block.pos[i] = old_block.pos[i];
-                                }
-                            }
-                        }
+                
+                if (is_down) {
+                    if ((vk_code == 'A') || (vk_code == VK_LEFT)) {
+                        move_current_block_left(game_state);
                     }
                     else if ((vk_code == 'S') || (vk_code == VK_DOWN)) {
-                        // ++game_state->current_block.pos.y;
+                        Block old_block  = game_state->current_block;
+                        for (int i = 0; i < 4; ++i) {
+                            ++game_state->current_block.pos[i].y;
+                        }
+                        b32 valid = (is_block_colliding(game_state, &game_state->current_block) ||
+                                     is_block_out_of_bounds(&game_state->current_block));
+                        if (valid)  {
+                            game_state->current_block = old_block;
+                        }
                     }
                     else if ((vk_code == 'D') || (vk_code == VK_RIGHT)) {
-                        b32 can_move = true;
-                        for (int i = 0; i < 4; ++i) {
-                            if (game_state->current_block.pos[i].x >= GRID_WIDTH-1) {
-                                can_move = false;
-                            }
-                        }
-                        if (can_move)  {
-                            Block old_block  = game_state->current_block;
-                            for (int i = 0; i < 4; ++i) {
-                                ++game_state->current_block.pos[i].x;
-                            }
-                            b32 hit = is_block_colliding(game_state, &game_state->current_block);
-                            if (hit)  {
-                                for (int i = 0; i < 4; ++i) {
-                                    game_state->current_block.pos[i] = old_block.pos[i];
-                                }
-                            }
-                        }
+                        move_current_block_right(game_state);
                     }
                     else if ((vk_code == 'J') || (vk_code == 'K')) {
                         b32 clockwise = (vk_code == 'J') ? false : true;
@@ -484,7 +526,7 @@ WinMain(HINSTANCE instance,
                                   "Tetris",
                                   WS_OVERLAPPEDWINDOW|WS_VISIBLE,
                                   CW_USEDEFAULT, CW_USEDEFAULT,
-                                  WIDTH, HEIGHT,
+                                  WINDOW_WIDTH, WINDOW_HEIGHT,
                                   0, 0, instance, 0);
     if (!window)  {
         // @todo
@@ -501,7 +543,7 @@ WinMain(HINSTANCE instance,
     f32 target_seconds_per_frame =  1.0f / (f32)game_update_hz;
     f32 dt = target_seconds_per_frame;
     
-    f32 move_update_frequency_ms = 100.0f;
+    f32 move_update_frequency_ms = 200.0f;
     LARGE_INTEGER last_move_counter = win32_get_wall_clock();
     
     LARGE_INTEGER perf_count_frequency_result;
@@ -517,9 +559,6 @@ WinMain(HINSTANCE instance,
     QueryPerformanceCounter(&last_counter);
     u64 last_cycle_count = __rdtsc();
     while (global_running) {
-        //
-        // simulate
-        //
         auto add_block_to_grid = [](Game_State *game_state, Block *block) {
             for (int i = 0; i < 4; ++i) {
                 game_state->grid[block->pos[i].y][block->pos[i].x] = block->type;
@@ -528,9 +567,14 @@ WinMain(HINSTANCE instance,
         
         Block old_block  = game_state.current_block;
         
+        //
         // @note handle input
+        //
         win32_process_pending_messages(&game_state);
         
+        //
+        // @note simulate
+        //
         
         // @note check if current_block hit other blocks because of the player input
         b32 hit = is_block_colliding(&game_state, &game_state.current_block);
@@ -608,7 +652,7 @@ WinMain(HINSTANCE instance,
         }
         
         //
-        // render
+        // @note render
         //
         win32_clear_buffer(&global_backbuffer, &game_state);
         
@@ -630,7 +674,7 @@ WinMain(HINSTANCE instance,
         win32_display_buffer_in_window(&global_backbuffer, device_context, dimension.width, dimension.height);
         
         //
-        // frame rate
+        // @note frame rate
         //
         LARGE_INTEGER work_counter = win32_get_wall_clock();
         f32 seconds_elapsed_for_work = win32_get_seconds_elapsed(last_counter, work_counter);
