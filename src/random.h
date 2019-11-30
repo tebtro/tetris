@@ -530,5 +530,11 @@ get_next_random_number() {
     return random_number;
 }
 
+internal u32
+get_next_random_number_in_range(int min, int max) {
+    u32 random = min + (get_next_random_number() % ((max + 1) - min));
+    return random;
+}
+
 #define RANDOM_H
 #endif

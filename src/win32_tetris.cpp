@@ -1,5 +1,11 @@
+// @todo better input system
+//       handle input more frequently
+//       do downward movement every x ms, add the dt to a counter every frame, and check if its above the current update frequency, if then do the update and reset to zero.
+//       render with the input system frequency for now
+//
 // @todo frame rate and sleep, dt
 // @todo handle controller input
+
 
 
 #include <windows.h>
@@ -97,6 +103,7 @@ global Vector3 block_colors_by_type[Block_Type::ENUM_SIZE] = {
 };
 global Win32_Offscreen_Buffer global_backbuffer;
 global b32 global_running;
+global s64 global_performance_count_frequency;
 
 
 internal b32
@@ -162,7 +169,9 @@ internal void
 make_new_current_block(Game_State *game_state) {
     // @todo generate different rotations?
     
-    enum32(Block_Type) type = (get_next_random_number() % Block_Type::ENUM_SIZE-1) + 2;
+    int min = Block_Type::EMPTY + 1;
+    int max = Block_Type::ENUM_SIZE - 1;
+    enum32(Block_Type) type = get_next_random_number_in_range(min, max); // @note we don't want 0=empty and 8=enum_size
     game_state->current_block.type = type;
     
     int half_screen = ((int)GRID_WIDTH/2);
@@ -367,8 +376,15 @@ win32_process_pending_messages(Game_State *game_state) {
                             }
                         }
                         if (can_move)  {
+                            Block old_block  = game_state->current_block;
                             for (int i = 0; i < 4; ++i) {
                                 --game_state->current_block.pos[i].x;
+                            }
+                            b32 hit = is_block_colliding(game_state, &game_state->current_block);
+                            if (hit)  {
+                                for (int i = 0; i < 4; ++i) {
+                                    game_state->current_block.pos[i] = old_block.pos[i];
+                                }
                             }
                         }
                     }
@@ -383,8 +399,15 @@ win32_process_pending_messages(Game_State *game_state) {
                             }
                         }
                         if (can_move)  {
+                            Block old_block  = game_state->current_block;
                             for (int i = 0; i < 4; ++i) {
                                 ++game_state->current_block.pos[i].x;
+                            }
+                            b32 hit = is_block_colliding(game_state, &game_state->current_block);
+                            if (hit)  {
+                                for (int i = 0; i < 4; ++i) {
+                                    game_state->current_block.pos[i] = old_block.pos[i];
+                                }
                             }
                         }
                     }
@@ -420,11 +443,32 @@ win32_process_pending_messages(Game_State *game_state) {
     }
 }
 
+inline LARGE_INTEGER
+win32_get_wall_clock() {
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return counter;
+}
+
+inline f32
+win32_get_seconds_elapsed(LARGE_INTEGER start, LARGE_INTEGER end) {
+    f32 result = ((f32)(end.QuadPart - start.QuadPart) / (f32)global_performance_count_frequency);
+    return result;
+}
+
 int CALLBACK
 WinMain(HINSTANCE instance,
         HINSTANCE prev_instance,
         LPSTR     cmd_line,
         int       show_cmd) {
+    LARGE_INTEGER performance_count_frequency_result;
+    QueryPerformanceFrequency(&performance_count_frequency_result);
+    global_performance_count_frequency = performance_count_frequency_result.QuadPart;
+    
+    UINT desired_scheduler_ms = 1;
+    b32 sleep_is_granular = (timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR);
+    
+    
     win32_resize_dib_section(&global_backbuffer, WIDTH, HEIGHT);
     
     WNDCLASSA window_class = {};
@@ -448,6 +492,18 @@ WinMain(HINSTANCE instance,
     
     HDC device_context = GetDC(window);
     
+    int monitor_refresh_hz = 60;
+    int win32_refresh_rate = GetDeviceCaps(device_context, VREFRESH);
+    if (win32_refresh_rate > 1)  {
+        monitor_refresh_hz = win32_refresh_rate;
+    }
+    f32 game_update_hz = (monitor_refresh_hz / 2.0f);
+    f32 target_seconds_per_frame =  1.0f / (f32)game_update_hz;
+    f32 dt = target_seconds_per_frame;
+    
+    f32 move_update_frequency_ms = 100.0f;
+    LARGE_INTEGER last_move_counter = win32_get_wall_clock();
+    
     LARGE_INTEGER perf_count_frequency_result;
     QueryPerformanceFrequency(&perf_count_frequency_result);
     s64 perf_count_frequency = perf_count_frequency_result.QuadPart;
@@ -457,7 +513,7 @@ WinMain(HINSTANCE instance,
     
     global_running = true;
     
-    LARGE_INTEGER last_counter;
+    LARGE_INTEGER last_counter = win32_get_wall_clock();
     QueryPerformanceCounter(&last_counter);
     u64 last_cycle_count = __rdtsc();
     while (global_running) {
@@ -485,24 +541,25 @@ WinMain(HINSTANCE instance,
         }
         
         // @note check if current_block hit the bottom
-        b32 out_of_bounds = is_block_out_of_bounds(&game_state.current_block);
-#if 1
-        out_of_bounds = false;
-        for (int i = 0; i < 4; ++i) {
-            if (game_state.current_block.pos[i].y >= GRID_HEIGHT-1) {
-                out_of_bounds = true;
-            }
-        }
-#endif
-        if (out_of_bounds)  {
-            add_block_to_grid(&game_state, &old_block);
-            make_new_current_block(&game_state);
-        }
-        else {
-            // @note move the current_block downward
+        old_block = game_state.current_block;
+        // @note move the current_block downward
+        f32 ms_since_last_move = 1000.0f * win32_get_seconds_elapsed(last_move_counter, win32_get_wall_clock());
+        if (ms_since_last_move >= move_update_frequency_ms) {
             for (int i = 0; i < 4; ++i) {
                 ++game_state.current_block.pos[i].y;
             }
+            
+            last_move_counter = win32_get_wall_clock();
+        }
+        b32 out_of_bounds = is_block_out_of_bounds(&game_state.current_block);
+        if (out_of_bounds)  {
+            // set current_block pos to old_block pos
+            for (int i = 0; i < 4; ++i) {
+                game_state.current_block.pos[i] = old_block.pos[i];
+            }
+            
+            add_block_to_grid(&game_state, &old_block);
+            make_new_current_block(&game_state);
         }
         
         // @note check if current block hit other blocks after moving downward
@@ -573,27 +630,50 @@ WinMain(HINSTANCE instance,
         win32_display_buffer_in_window(&global_backbuffer, device_context, dimension.width, dimension.height);
         
         //
-        // sleep
+        // frame rate
         //
-        DWORD sleep_ms = 80;
-        Sleep(sleep_ms);
+        LARGE_INTEGER work_counter = win32_get_wall_clock();
+        f32 seconds_elapsed_for_work = win32_get_seconds_elapsed(last_counter, work_counter);
+        
+        f32 seconds_elapsed_for_frame = seconds_elapsed_for_work;
+        if (seconds_elapsed_for_frame < target_seconds_per_frame) {
+            DWORD sleep_ms;
+            if (sleep_is_granular)  {
+                sleep_ms = (DWORD)(1000 * (DWORD)(target_seconds_per_frame - seconds_elapsed_for_frame));
+                if (sleep_ms > 0)  {
+                    Sleep(sleep_ms);
+                }
+            }
+            
+            f32 test_seconds_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
+            if (test_seconds_elapsed_for_frame > target_seconds_per_frame)  {
+                // @todo missed sleep here
+            }
+            
+            while (seconds_elapsed_for_frame < target_seconds_per_frame) {
+                seconds_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
+            }
+        }
+        else {
+            // @todo missed frame rate!
+        }
+        
+        LARGE_INTEGER end_counter = win32_get_wall_clock();
+        f64 ms_per_frame = 1000.0f * win32_get_seconds_elapsed(last_counter, end_counter);
+        last_counter = end_counter;
         
         
         u64 end_cycle_count = __rdtsc();
-        LARGE_INTEGER end_counter;
-        QueryPerformanceCounter(&end_counter);
-        
         u64 cycles_elapsed = end_cycle_count - last_cycle_count;
-        s64 counter_elapsed = end_counter.QuadPart - last_counter.QuadPart;
-        f64 ms_per_frame = (f64)((1000.0f * (f64)counter_elapsed) / (f64)perf_count_frequency);
-        f64 fps = (f64)perf_count_frequency / (f64)counter_elapsed;
+        last_cycle_count = end_cycle_count;
+        
+        f64 fps = 0; // @note not a relevant measurement (f64)global_performance_count_frequency / (f64)counter_elapsed;
         f64 mcpf = (f64)cycles_elapsed / (1000.0f * 1000.0f);
         
-        char string_buffer[256];
-        sprintf(string_buffer, "%.02fms/f, %.02fFPS, %.02fmc/f\n", ms_per_frame, fps, mcpf);
-        OutputDebugStringA(string_buffer);
-        
-        last_counter = end_counter;
-        last_cycle_count = end_cycle_count;
+        char fps_buffer[256];
+        _snprintf_s(fps_buffer, sizeof(fps_buffer), "%.02fms/work, %.02fms/f, %.02ffps, %.02fmc/f\n", seconds_elapsed_for_work*1000, ms_per_frame, fps, mcpf);
+        OutputDebugStringA(fps_buffer);
     }
+    
+    return 0;
 }
