@@ -13,13 +13,15 @@ namespace iml {
 //
 
 #include "iml_types.h"
-#include <assert.h>
 
 
 //
 // defines
 //
 
+// #include <assert.h>
+#define assert(expression) if (!(expression)) { *(int *)(0) = 0; }
+#define array_count(array) (sizeof(array) / sizeof((array)[0]))
 
 
 //

@@ -1,9 +1,4 @@
 // @todo better input system
-//       handle input more frequently
-//       do downward movement every x ms, add the dt to a counter every frame, and check if its above the current update frequency, if then do the update and reset to zero.
-//       render with the input system frequency for now
-//
-// @todo frame rate and sleep, dt
 // @todo handle controller input
 
 
@@ -11,10 +6,13 @@
 #include <windows.h>
 #include <mmsystem.h> // @note excluded in lean and mean, used for timeBeginPeriod to set scheduler granularity
 
+#include <xinput.h>
+
 #include <stdio.h>
 
 #include "iml_general.h"
 #include "iml_types.h"
+
 
 #define SCALE_FACTOR 6
 
@@ -112,6 +110,48 @@ global Vector3 block_colors_by_type[Block_Type::ENUM_SIZE] = {
 global Win32_Offscreen_Buffer global_backbuffer;
 global b32 global_running;
 global s64 global_performance_count_frequency;
+
+
+// @note xinput_get_state
+#define XINPUT_GET_STATE_SIG(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
+typedef XINPUT_GET_STATE_SIG(XInput_Get_State_Sig);
+XINPUT_GET_STATE_SIG(xinput_get_state_stub) {
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+global XInput_Get_State_Sig *xinput_get_state_ = xinput_get_state_stub;
+#define xinput_get_state xinput_get_state_
+
+// @note xinput_set_state
+#define XINPUT_SET_STATE_SIG(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
+typedef XINPUT_SET_STATE_SIG(XInput_Set_State_Sig);
+XINPUT_SET_STATE_SIG(xinput_set_state_stub) {
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+global XInput_Set_State_Sig *xinput_set_state_ = xinput_set_state_stub;
+#define xinput_set_state xinput_set_state_
+
+internal void
+win32_load_xinput() {
+    HMODULE xinput_library = LoadLibraryA("xinput1_4.dll");
+    if(!xinput_library) {
+        xinput_library = LoadLibraryA("xinput9_1_0.dll");
+    }
+    if(!xinput_library) {
+        xinput_library = LoadLibraryA("xinput1_3.dll");
+    }
+    
+    if (!xinput_library)  return;
+    
+    xinput_get_state = (XInput_Get_State_Sig *)GetProcAddress(xinput_library, "XInputGetState");
+    if (!xinput_get_state) {
+        xinput_get_state = xinput_get_state_stub;
+    }
+    
+    xinput_set_state = (XInput_Set_State_Sig *)GetProcAddress(xinput_library, "XInputSetState");
+    if (!xinput_set_state)  {
+        xinput_set_state = xinput_set_state_stub;
+    }
+}
 
 
 internal b32
@@ -434,12 +474,13 @@ win32_process_pending_messages(Game_State *game_state) {
                 // we MUST use == and != to convert these bit tests to actual 0 or 1 values.
                 b32 was_down = ((message.lParam & (1 << 30)) != 0);
                 b32 is_down = ((message.lParam & (1 << 31)) == 0);
-                
                 if (is_down) {
-                    if ((vk_code == 'A') || (vk_code == VK_LEFT)) {
+                    if (vk_code == 'W') {
+                    }
+                    else if (vk_code == 'A') {
                         move_current_block_left(game_state);
                     }
-                    else if ((vk_code == 'S') || (vk_code == VK_DOWN)) {
+                    else if (vk_code == 'S') {
                         Block old_block  = game_state->current_block;
                         for (int i = 0; i < 4; ++i) {
                             ++game_state->current_block.pos[i].y;
@@ -450,11 +491,19 @@ win32_process_pending_messages(Game_State *game_state) {
                             game_state->current_block = old_block;
                         }
                     }
-                    else if ((vk_code == 'D') || (vk_code == VK_RIGHT)) {
+                    else if (vk_code == 'D') {
                         move_current_block_right(game_state);
                     }
-                    else if ((vk_code == 'J') || (vk_code == 'K')) {
-                        b32 clockwise = (vk_code == 'J') ? false : true;
+                    else if (vk_code == 'Q') {
+                    }
+                    else if (vk_code == 'E') {
+                    }
+                    // else if ((vk_code == 'K') || (vk_code == VK_UP)) {
+                    // }
+                    else if ((vk_code == 'H') || (vk_code == VK_LEFT)) {
+                    }
+                    else if ((vk_code == 'J') || (vk_code == VK_DOWN) || (vk_code == 'K') || (vk_code == VK_UP)) {
+                        b32 clockwise = (vk_code == 'K') ? true : false;
                         
                         Block old_block  = game_state->current_block;
                         rotate_block(&game_state->current_block, clockwise);
@@ -464,15 +513,21 @@ win32_process_pending_messages(Game_State *game_state) {
                             game_state->current_block = old_block;
                         }
                     }
-                    else if (vk_code == VK_ESCAPE) {
+                    else if ((vk_code == 'L') || (vk_code == VK_RIGHT)) {
+                    }
+                    else if (vk_code == VK_RETURN) {
+                    }
+                    else if (vk_code == VK_BACK) {
+                    }
+                    if (vk_code == VK_ESCAPE) {
                         global_running = false;
                     }
-                }
-                
-                if (is_down) {
-                    b32 alt_key_was_down = (message.lParam & (1 << 29));
-                    if ((vk_code == VK_F4) && alt_key_was_down) {
-                        global_running = false;
+                    
+                    if (is_down) {
+                        b32 alt_key_was_down = (message.lParam & (1 << 29));
+                        if ((vk_code == VK_F4) && alt_key_was_down) {
+                            global_running = false;
+                        }
                     }
                 }
             } break;
@@ -510,6 +565,7 @@ WinMain(HINSTANCE instance,
     UINT desired_scheduler_ms = 1;
     b32 sleep_is_granular = (timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR);
     
+    win32_load_xinput();
     
     win32_resize_dib_section(&global_backbuffer, WIDTH, HEIGHT);
     
@@ -570,6 +626,7 @@ WinMain(HINSTANCE instance,
         //
         // @note handle input
         //
+        
         win32_process_pending_messages(&game_state);
         
         //
