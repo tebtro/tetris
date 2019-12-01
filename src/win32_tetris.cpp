@@ -1,5 +1,6 @@
 // @todo better input system
 // @todo handle controller input
+// @todo fullscreen support
 
 
 #define WIN32_LEAN_AND_MEAN
@@ -95,6 +96,55 @@ struct Game_State {
     Block current_block;
     int grid[GRID_HEIGHT][GRID_WIDTH]; // @todo enum for the color of the block
 };
+
+struct Game_Button_State {
+    b32 ended_down;
+    b32 allow_press;
+    int half_transition_count;
+};
+
+struct Game_Controller_Input {
+    b32 is_connected;
+    b32 is_analog;
+    f32 stick_average_x;
+    f32 stick_average_y;
+    
+    union {
+        Game_Button_State buttons[12];
+        
+        struct {
+            Game_Button_State move_up;
+            Game_Button_State move_down;
+            Game_Button_State move_left;
+            Game_Button_State move_right;
+            
+            Game_Button_State action_up;
+            Game_Button_State action_down;
+            Game_Button_State action_left;
+            Game_Button_State action_right;
+            
+            Game_Button_State left_shoulder;
+            Game_Button_State right_shoulder;
+            
+            Game_Button_State start;
+            Game_Button_State back;
+            
+            // @note all buttons must be added to the struct above this line!!!
+            Game_Button_State _terminator_;
+        };
+    };
+};
+
+struct Game_Input {
+    Game_Controller_Input controllers[5];
+};
+
+inline Game_Controller_Input *
+get_controller(Game_Input *input, u32 controller_index) {
+    assert(controller_index < array_count(input->controllers));
+    return &input->controllers[controller_index];
+}
+
 
 global Vector3 block_colors_by_type[Block_Type::ENUM_SIZE] = {
     rgb(255,255,255), // Block_Type::EMPTY, should not get rendered
@@ -457,7 +507,35 @@ move_current_block_right(Game_State *game_state) {
 }
 
 internal void
-win32_process_pending_messages(Game_State *game_state) {
+win32_process_keyboard_message(Game_Button_State *new_state, b32 is_down) {
+    if (new_state->ended_down == is_down)  return;
+    new_state->ended_down = is_down;
+    ++new_state->half_transition_count;
+}
+
+internal void
+win32_process_xinput_digital_button(DWORD xinput_button_state,
+                                    Game_Button_State *old_state, DWORD button_bit,
+                                    Game_Button_State *new_state) {
+    b32 is_down = ((xinput_button_state & button_bit) == button_bit);
+    new_state->ended_down = false;
+    if (!is_down)  {
+        new_state->allow_press = true;
+        return;
+    }
+    else {
+        new_state->allow_press = false;
+        
+        if (old_state->allow_press)  {
+            new_state->ended_down = is_down;
+            new_state->half_transition_count = (old_state->ended_down != new_state->ended_down) ? 1 : 0;
+            return;
+        }
+    }
+}
+
+internal void
+win32_process_pending_messages(Game_Controller_Input *keyboard_controller) {
     MSG message;
     while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
         switch (message.message) {
@@ -474,50 +552,42 @@ win32_process_pending_messages(Game_State *game_state) {
                 // we MUST use == and != to convert these bit tests to actual 0 or 1 values.
                 b32 was_down = ((message.lParam & (1 << 30)) != 0);
                 b32 is_down = ((message.lParam & (1 << 31)) == 0);
-                if (is_down) {
+                if (was_down != is_down) {
                     if (vk_code == 'W') {
+                        win32_process_keyboard_message(&keyboard_controller->move_up, is_down);
                     }
                     else if (vk_code == 'A') {
-                        move_current_block_left(game_state);
+                        win32_process_keyboard_message(&keyboard_controller->move_left, is_down);
                     }
                     else if (vk_code == 'S') {
-                        Block old_block  = game_state->current_block;
-                        for (int i = 0; i < 4; ++i) {
-                            ++game_state->current_block.pos[i].y;
-                        }
-                        b32 valid = (is_block_colliding(game_state, &game_state->current_block) ||
-                                     is_block_out_of_bounds(&game_state->current_block));
-                        if (valid)  {
-                            game_state->current_block = old_block;
-                        }
+                        win32_process_keyboard_message(&keyboard_controller->move_down, is_down);
                     }
                     else if (vk_code == 'D') {
-                        move_current_block_right(game_state);
+                        win32_process_keyboard_message(&keyboard_controller->move_right, is_down);
                     }
                     else if (vk_code == 'Q') {
+                        win32_process_keyboard_message(&keyboard_controller->left_shoulder, is_down);
                     }
                     else if (vk_code == 'E') {
+                        win32_process_keyboard_message(&keyboard_controller->right_shoulder, is_down);
                     }
-                    // else if ((vk_code == 'K') || (vk_code == VK_UP)) {
-                    // }
-                    else if ((vk_code == 'H') || (vk_code == VK_LEFT)) {
+                    else if (vk_code == VK_UP) {
+                        win32_process_keyboard_message(&keyboard_controller->action_up, is_down);
                     }
-                    else if ((vk_code == 'J') || (vk_code == VK_DOWN) || (vk_code == 'K') || (vk_code == VK_UP)) {
-                        b32 clockwise = (vk_code == 'K') ? true : false;
-                        
-                        Block old_block  = game_state->current_block;
-                        rotate_block(&game_state->current_block, clockwise);
-                        b32 valid = (is_block_colliding(game_state, &game_state->current_block) ||
-                                     is_block_out_of_bounds(&game_state->current_block));
-                        if (valid)  {
-                            game_state->current_block = old_block;
-                        }
+                    else if (vk_code == VK_LEFT) {
+                        win32_process_keyboard_message(&keyboard_controller->action_left, is_down);
                     }
-                    else if ((vk_code == 'L') || (vk_code == VK_RIGHT)) {
+                    else if ((vk_code == VK_DOWN) || (vk_code == 'K')) {
+                        win32_process_keyboard_message(&keyboard_controller->action_down, is_down);
+                    }
+                    else if ((vk_code == VK_RIGHT) || (vk_code == 'J')) {
+                        win32_process_keyboard_message(&keyboard_controller->action_right, is_down);
                     }
                     else if (vk_code == VK_RETURN) {
+                        win32_process_keyboard_message(&keyboard_controller->start, is_down);
                     }
                     else if (vk_code == VK_BACK) {
+                        win32_process_keyboard_message(&keyboard_controller->back, is_down);
                     }
                     if (vk_code == VK_ESCAPE) {
                         global_running = false;
@@ -606,6 +676,12 @@ WinMain(HINSTANCE instance,
     QueryPerformanceFrequency(&perf_count_frequency_result);
     s64 perf_count_frequency = perf_count_frequency_result.QuadPart;
     
+    Game_Input input[2] = {};
+    Game_Input *new_input = &input[0];
+    Game_Input *old_input = &input[1];
+    
+    int active_controller_index = 0;
+    
     Game_State game_state = {};
     reset_game(&game_state, false);
     
@@ -627,7 +703,165 @@ WinMain(HINSTANCE instance,
         // @note handle input
         //
         
-        win32_process_pending_messages(&game_state);
+        Game_Controller_Input *old_keyboard_controller = get_controller(old_input, 0);
+        Game_Controller_Input *new_keyboard_controller = get_controller(new_input, 0);
+        *new_keyboard_controller = {};
+        new_keyboard_controller->is_connected = true;
+        
+#if 0
+        for (int button_index = 0; button_index < array_count(new_keyboard_controller->buttons); ++button_index) {
+            new_keyboard_controller->buttons[button_index].ended_down = old_keyboard_controller->buttons[button_index].ended_down;
+        }
+#endif
+        
+        win32_process_pending_messages(new_keyboard_controller);
+        
+        DWORD max_controller_count = XUSER_MAX_COUNT;
+        DWORD input_controller_count = array_count(input->controllers) - 1;
+        if (max_controller_count > input_controller_count) {
+            max_controller_count = input_controller_count;
+        }
+        for (DWORD controller_index = 0; controller_index < max_controller_count; ++controller_index) {
+            DWORD our_controller_index = controller_index + 1;
+            Game_Controller_Input *old_controller = get_controller(old_input, our_controller_index);
+            Game_Controller_Input *new_controller = get_controller(new_input, our_controller_index);
+            *new_controller = {};
+            
+            XINPUT_STATE controller_state;
+            ZeroMemory(&controller_state, sizeof(XINPUT_STATE));
+            if (xinput_get_state(controller_index, &controller_state) != ERROR_SUCCESS) {
+                new_controller->is_connected = false;
+                continue;
+            }
+            
+            new_controller->is_connected = true;
+            new_controller->is_analog = old_controller->is_analog;
+            XINPUT_GAMEPAD *pad = &controller_state.Gamepad;
+            
+            // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE 7689
+            // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE 8689
+            auto process_xinput_stick_value = [](SHORT value, SHORT deadzone_threshold) {
+                f32 result = 0;
+                if (value < -deadzone_threshold) {
+                    result = (f32)((value + deadzone_threshold) / (32768.0f - deadzone_threshold));
+                }
+                else if (value > deadzone_threshold){
+                    result = (f32)((value - deadzone_threshold) / (32767.0f - deadzone_threshold));
+                }
+                return result;
+            };
+            
+            new_controller->stick_average_x = process_xinput_stick_value(pad->sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            new_controller->stick_average_y = process_xinput_stick_value(pad->sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+            if ((new_controller->stick_average_x != 0.0f) ||
+                (new_controller->stick_average_y != 0.0f)) {
+                new_controller->is_analog = true;
+            }
+            
+            if (pad->wButtons & XINPUT_GAMEPAD_DPAD_UP) {
+                new_controller->stick_average_y = 1.0f;
+                new_controller->is_analog = false;
+            }
+            if (pad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN) {
+                new_controller->stick_average_y = -1.0f;
+                new_controller->is_analog = false;
+            }
+            if (pad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT) {
+                new_controller->stick_average_x = -1.0f;
+                new_controller->is_analog = false;
+            }
+            if (pad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) {
+                new_controller->stick_average_x = 1.0f;
+                new_controller->is_analog = false;
+            }
+            
+            f32 threshold = 0.5f;
+            win32_process_xinput_digital_button((new_controller->stick_average_x < -threshold) ? 1 : 0,
+                                                &old_controller->move_left, 1,
+                                                &new_controller->move_left);
+            win32_process_xinput_digital_button((new_controller->stick_average_x > threshold) ? 1 : 0,
+                                                &old_controller->move_right, 1,
+                                                &new_controller->move_right);
+            win32_process_xinput_digital_button((new_controller->stick_average_y < -threshold) ? 1 : 0,
+                                                &old_controller->move_down, 1,
+                                                &new_controller->move_down);
+            win32_process_xinput_digital_button((new_controller->stick_average_y > threshold) ? 1 : 0,
+                                                &old_controller->move_up, 1,
+                                                &new_controller->move_up);
+            
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->action_down, XINPUT_GAMEPAD_A,
+                                                &new_controller->action_down);
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->action_right, XINPUT_GAMEPAD_B,
+                                                &new_controller->action_right);
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->action_left, XINPUT_GAMEPAD_X,
+                                                &new_controller->action_left);
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->action_up, XINPUT_GAMEPAD_Y,
+                                                &new_controller->action_up);
+            
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->left_shoulder, XINPUT_GAMEPAD_LEFT_SHOULDER,
+                                                &new_controller->left_shoulder);
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->right_shoulder, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+                                                &new_controller->right_shoulder);
+            
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->start, XINPUT_GAMEPAD_START,
+                                                &new_controller->start);
+            win32_process_xinput_digital_button(pad->wButtons,
+                                                &old_controller->back, XINPUT_GAMEPAD_BACK,
+                                                &new_controller->back);
+        }
+        
+        //
+        // @note do input
+        //
+        
+        for (DWORD controller_index = 0; controller_index < input_controller_count; ++controller_index) {
+            Game_Controller_Input *controller = get_controller(old_input, controller_index);
+            if (controller->start.ended_down)  {
+                active_controller_index = controller_index;
+            }
+        }
+        
+        {
+            Game_Controller_Input *controller = get_controller(new_input, active_controller_index);
+            
+            if (controller->move_up.ended_down) {
+            }
+            else if (controller->move_left.ended_down) {
+                move_current_block_left(&game_state);
+            }
+            else if (controller->move_down.ended_down) {
+                Block old_block  = game_state.current_block;
+                for (int i = 0; i < 4; ++i) {
+                    ++game_state.current_block.pos[i].y;
+                }
+                b32 valid = (is_block_colliding(&game_state, &game_state.current_block) ||
+                             is_block_out_of_bounds(&game_state.current_block));
+                if (valid)  {
+                    game_state.current_block = old_block;
+                }
+            }
+            else if (controller->move_right.ended_down) {
+                move_current_block_right(&game_state);
+            }
+            else if (controller->action_right.ended_down || controller->action_down.ended_down) {
+                b32 clockwise = (controller->action_down.ended_down) ? true : false;
+                
+                Block old_block  = game_state.current_block;
+                rotate_block(&game_state.current_block, clockwise);
+                b32 valid = (is_block_colliding(&game_state, &game_state.current_block) ||
+                             is_block_out_of_bounds(&game_state.current_block));
+                if (valid)  {
+                    game_state.current_block = old_block;
+                }
+            }
+        }
         
         //
         // @note simulate
@@ -763,6 +997,9 @@ WinMain(HINSTANCE instance,
         f64 ms_per_frame = 1000.0f * win32_get_seconds_elapsed(last_counter, end_counter);
         last_counter = end_counter;
         
+        Game_Input *temp_input = new_input;
+        new_input = old_input;
+        old_input = temp_input;
         
         u64 end_cycle_count = __rdtsc();
         u64 cycles_elapsed = end_cycle_count - last_cycle_count;

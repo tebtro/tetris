@@ -5,7 +5,7 @@ pushd ..\build
 
 :: -O2 optimization level 2
 :: -Od for debbugging, no optimization
-set CommonCompilerFlags=/nologo /Fe:snake -FC -Zi /EHsc -Od -diagnostics:column -diagnostics:caret
+set CommonCompilerFlags=/nologo /Fe:tetris -FC -Zi /EHsc -Od -diagnostics:column -diagnostics:caret
 
 :: Linker Options
 set AdditionalLinkerFlags=-incremental:no -opt:ref
