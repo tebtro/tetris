@@ -1,6 +1,4 @@
-// @todo better input system
-// @todo handle controller input
-// @todo fullscreen support
+// @todo improve input system
 
 
 #define WIN32_LEAN_AND_MEAN
@@ -160,6 +158,7 @@ global Vector3 block_colors_by_type[Block_Type::ENUM_SIZE] = {
 global Win32_Offscreen_Buffer global_backbuffer;
 global b32 global_running;
 global s64 global_performance_count_frequency;
+global WINDOWPLACEMENT global_window_position = { sizeof(global_window_position) };
 
 
 // @note xinput_get_state
@@ -358,11 +357,56 @@ win32_get_window_dimension(HWND window) {
 
 internal void
 win32_display_buffer_in_window(Win32_Offscreen_Buffer *buffer, HDC device_context, int window_width, int window_height) {
+    // @todo better scaling, centering, black bars, ...
+    
+    int buffer_width = WINDOW_WIDTH;
+    int buffer_height = WINDOW_HEIGHT;
+    
+    f32 height_scale = (f32)window_height / (f32)buffer_height;
+    int new_width = (f32)buffer_width * height_scale;
+    int offset_x = (window_width - new_width) / 2;
+    if (new_width <= buffer_width)  {
+        offset_x = 0;
+        new_width = window_width;
+    }
+    else {
+        PatBlt(device_context, 0, 0, offset_x-2, window_height, BLACKNESS);
+        PatBlt(device_context, offset_x-2, 0, offset_x, window_height,  WHITENESS);
+        PatBlt(device_context, offset_x+new_width, 0, offset_x+buffer_width+2, window_height, WHITENESS);
+        PatBlt(device_context, offset_x+new_width+2, 0, window_width, window_height, BLACKNESS);
+    }
+    
     StretchDIBits(device_context,
-                  0, 0, window_width, window_height,
+                  offset_x, 0, new_width, window_height,
                   0, 0, buffer->width, buffer->height,
                   buffer->memory, &buffer->info,
                   DIB_RGB_COLORS, SRCCOPY);
+}
+
+internal void
+toggle_fullscreen(HWND window) {
+    // @note: This follows Raymond Chen's prescription for fullscreen toggling, see:
+    //        https://devblogs.microsoft.com/oldnewthing/20100412-00/?p=14353
+    
+    DWORD style = GetWindowLong(window, GWL_STYLE);
+    if (style & WS_OVERLAPPEDWINDOW) {
+        MONITORINFO monitor_info = { sizeof(monitor_info) };
+        if (GetWindowPlacement(window, &global_window_position) &&
+            GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor_info)) {
+            SetWindowLong(window, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+            SetWindowPos(window, HWND_TOP,
+                         monitor_info.rcMonitor.left, monitor_info.rcMonitor.top,
+                         monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                         monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        }
+    }
+    else {
+        SetWindowLong(window, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(window, &global_window_position);
+        SetWindowPos(window, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
 }
 
 LRESULT CALLBACK
@@ -595,8 +639,15 @@ win32_process_pending_messages(Game_Controller_Input *keyboard_controller) {
                     
                     if (is_down) {
                         b32 alt_key_was_down = (message.lParam & (1 << 29));
-                        if ((vk_code == VK_F4) && alt_key_was_down) {
-                            global_running = false;
+                        if (alt_key_was_down)  {
+                            if (vk_code == VK_F4) {
+                                global_running = false;
+                            }
+                            if (vk_code == VK_RETURN)  {
+                                if (message.hwnd) {
+                                    toggle_fullscreen(message.hwnd);
+                                }
+                            }
                         }
                     }
                 }
